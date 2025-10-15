@@ -1,9 +1,18 @@
 /* Arduino Realtime Audio Processing
    2 ADC 8-Bit Mode
    analog input 0 is used to sample the audio signal
-   analog input 1 is used to control the mix
+   analog input 1 is used to control an audio effect
    PWM DAC with Timer2 as analog output
-*/
+   
+   Original idea:
+   KHM 2008 / Lab3/  Martin Nawrath nawrath@khm.de
+   Kunsthochschule fuer Medien Koeln
+   Academy of Media Arts Cologne
+    
+   Redeveloped by Niklas Rönnberg
+   Linköping university
+   For the course Ljudteknik 1
+ */
 
 #include <Arduino.h>
 #include <math.h>
@@ -74,7 +83,7 @@ void loop() {
   // --- Läs sinusvåg från buffer ---
   int sineSample = sramBuffer[bufferIndex] - dcOffset;
 
-  // --- Multiplicera () ---
+  // --- Multiplicera (RINGMODULATOR) ---
   long modulated = (long)soundSampleFromADC * (long)sineSample / 128L;
 
   // --- Mixstyrka från potentiometer ---

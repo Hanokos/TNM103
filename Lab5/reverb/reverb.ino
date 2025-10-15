@@ -109,8 +109,34 @@ void loop()
 
   if (badc1 == 0) badc1 = 1;
 
+  // soundSampleFromADC = badc0 - 127;
+
+  // int temp = (soundSampleFromADC * badc1) / 4;
+
+  // // Hard clipping
+  // if (temp > 127) temp = 127;
+  // if (temp < -127) temp = -127;
+
+  // sramBufferSampleValue = temp + 127;
+
   
-  //--- REVERB---
+
+  //flanger!
+
+  //soundSampleFromADC = badc0;
+  // sramBuffer[bufferIndex] = soundSampleFromADC;
+  // soundSampleFromSramBuffer = sramBuffer[bufferIndex2];
+
+  // bufferIndex = (bufferIndex + 1) % 512;
+  // bufferIndex2 = (bufferIndex - badc1) & 511; //stanna på maxvärdet
+
+  // int drySignal = sramBuffer[bufferIndex];
+  // int delaySignal = soundSampleFromSramBuffer;
+
+  
+  // sramBufferSampleValue = ((drySignal-127) + (delaySignal-127)) / 2 + 127;
+
+  //--- REVERB ---
   sramBufferSampleValue = sramBuffer[bufferIndex];
 
   soundSampleFromSramBuffer = 127 - sramBufferSampleValue;
