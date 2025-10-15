@@ -121,7 +121,7 @@ void loop()
 
   
 
-  //flanger!
+  // ---FLANGER /nästan funkades---
 
   //soundSampleFromADC = badc0;
   // sramBuffer[bufferIndex] = soundSampleFromADC;
@@ -136,7 +136,7 @@ void loop()
   
   // sramBufferSampleValue = ((drySignal-127) + (delaySignal-127)) / 2 + 127;
 
-  //reverb!
+  // --- REVERB --- ( TA BORT DENNA DEL FÖR REVERB)
   sramBufferSampleValue = sramBuffer[bufferIndex];
 
   soundSampleFromSramBuffer = 127 - sramBufferSampleValue;

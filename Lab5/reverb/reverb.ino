@@ -12,137 +12,164 @@
    Redeveloped by Niklas Rönnberg
    Linköping university
    For the course Ljudteknik 1
-*/
+ */
 
-#include <Arduino.h>
+// Inkludera math, för att kunna använda M_PI, round osv
 #include <math.h>
 
-//  cbi = Clear Bit, sbi = Set Bit i I/O-register
+// cbi betyder Clear Bit i I/O-registret och sätter specifik bit till 0
+// sbi betyder Set Bit i I/O-registret och sätter specifik bit till 1
+// Definiera cbi och sbi
 #define cbi(sfr, bit) (_SFR_BYTE(sfr) &= ~_BV(bit))
 #define sbi(sfr, bit) (_SFR_BYTE(sfr) |= _BV(bit))
 
-//  Globala variabler för sampling 
-volatile boolean div32;
-volatile boolean div16;
-volatile boolean sampleFlag; 
-volatile byte badc0; // ljudsample (ADC kanal 0)
-volatile byte badc1; // potentiometer (ADC kanal 1)
-volatile byte ibb;
+// Definiera globala variabler som kommer att användas till delning av interruptservicen
+boolean div32;
+boolean div16;
 
-//  Globala variabler för reverb 
-#define WAVETABLE_SIZE 512
-byte sramBuffer[WAVETABLE_SIZE];
-volatile uint16_t bufferIndex;
+// Definiera globala variabler
+volatile boolean sampleFlag; // Sampleflaggan
+volatile byte badc0; // Det samplade ljudvärdet, byte AD-konverterare kanal 0
+volatile byte badc1; // Det samplade potentiometervärdet, kanal 1
+volatile byte ibb; // Global interruptvariabel
 
-int soundSampleFromADC;           // senaste ljudsample
-byte sramBufferSampleValue;       // ut-sample (0..255)
+int bufferIndex; // Index i SRAM buffer
+int bufferIndex2; // Alternativ index
 
-//  Tom funktion för kompatibilitet
-void fillSramBufferWithWaveTable() { }
+int soundSampleFromADC; // Variabel för att läsa samplevärde från ADCn
+int soundSampleFromSramBuffer; // Variabel för att läsa samplevärde från SRAM buffer
+byte sramBufferSampleValue; // sparat samplevärde i SRAM buffer
 
+byte sramBuffer[512]; // SRAM buffer, "ljudminne", 8-bitar
+
+
+
+
+// setup() är en funktion som körs en, och endast en gång, när Arduinot startas eller resetas. Den används för att initiera variabler, pinmodes etc. Void används då funktionen inte förväntas returnera något.
 void setup()
 {
-  Serial.begin(57600);
+  fillSramBufferWithWaveTable(); // Fyll SRAM-bufferten
+  Serial.begin(57600);        // connect to the serial port
+  // Atmega32 har tre register för ADC - ADCSRA , ADMUX and ADCW
+  // Det är snabbare att manipulera portar och pinnar med AVR-kod
+  // jämfört mot Arduinos digitalWrite()-funktion.
 
-  // --- ADC-inställningar ---
+  // set adc prescaler to 64 for 19kHz sampling frequency
+  // ADCSRA står för ADC Control and Status Register A
   cbi(ADCSRA, ADPS2);
   sbi(ADCSRA, ADPS1);
   sbi(ADCSRA, ADPS0);
 
-  sbi(ADMUX, ADLAR);   // 8-bit ADC i ADCH
-  sbi(ADMUX, REFS0);   // VCC som referens
-  cbi(ADMUX, REFS1);
-  cbi(ADMUX, MUX0);    // starta på kanal 0
-  cbi(ADMUX, MUX1);
-  cbi(ADMUX, MUX2);
-  cbi(ADMUX, MUX3);
+  // ADMUX är lågnivåskontroll av analog-till-digital-konverterarna.
+  // ADMUX är ett 8-bitars tal som innehåller ADCH-register
+  // ADMUX står för ADC Multiplexer Selection Register
+  sbi(ADMUX,ADLAR);  // 8-Bit ADC in ADCH Register
+  sbi(ADMUX,REFS0);  // VCC Reference
+  cbi(ADMUX,REFS1);
+  cbi(ADMUX,MUX0);   // Set Input Multiplexer to Channel 0
+  cbi(ADMUX,MUX1);
+  cbi(ADMUX,MUX2);
+  cbi(ADMUX,MUX3);
 
-  // --- TIMER2 för PWM-utgång ---
-  cbi(TCCR2A, COM2A0);
+  // TCCRnA och TCCRnB är kontrollregister för timer/räknare
+  // Timer2s PWM-mode sätts till fast PWM
+  cbi(TCCR2A, COM2A0); // Toggle on Compare Match
   sbi(TCCR2A, COM2A1);
-  sbi(TCCR2A, WGM20);
+  sbi(TCCR2A, WGM20); // waveform generation mode
   sbi(TCCR2A, WGM21);
   cbi(TCCR2B, WGM22);
 
-  sbi(TCCR2B, CS20);   // prescaler = 1
+  // Timer2 Clock Prescaler to : 1 
+  sbi(TCCR2B, CS20);
   cbi(TCCR2B, CS21);
   cbi(TCCR2B, CS22);
 
-  sbi(DDRB, 3);        // pin 11 som PWM-utgång (OCR2A)
+  // Timer2 PWM Port Enable
+  sbi(DDRB,3); // Sätt digitalpin 11 till PWM för att användas som analogutgång (OCR2A)
 
-  cbi(TIMSK0, TOIE0);
-  sbi(TIMSK2, TOIE2);
-
-  // --- Initiera buffert till mittvärde ---
-  for (int i = 0; i < WAVETABLE_SIZE; ++i) sramBuffer[i] = 127;
-  bufferIndex = 0;
-  sramBufferSampleValue = 127;
-  soundSampleFromADC = 127;
-
-  // Starta första ADC-konverteringen
-  sbi(ADCSRA, ADSC);
+  cbi(TIMSK0,TOIE0); // Inaktiverar Timer0 Interrupt
+  sbi(TIMSK2,TOIE2); // Aktiverar Timer2 Interrupt
+  
+  // Tilldela variabel soundSampleFromADC ett samplevärde från ADCn
+  soundSampleFromADC = badc0;  
 }
 
+
+
+
+// loop() är en funktion som körs om och om igen efter att Arduinot har startats och setup() har initierat Arduinot. Detta är huvudfunktionen och den körs så snabbt/ofta det går enligt klockfrekvensen i Arduinot. Normal klockfrekvens är 16MHz.
 void loop()
 {
-  // --- Vänta tills nytt sample finns ---
-  while (!sampleFlag) {}
-  sampleFlag = false;
+  // Vänta på samplevärde från analog-till-digital-konverteraren
+  // en samplingscykel 15625 KHz = 65 mikrosekunder 
+  while (!sampleFlag) {
+  }
 
-  uint8_t adc = badc0;   // inkommande ljud 0..255
-  uint8_t pot = badc1;   // potentiometer 0..255
+  sampleFlag = false;  // Sätt samplingsflaggan till false för att invänta nästa sample
 
-  // --- Läs från buffer, ta bort DC-offset och vänd fas ---
-  uint8_t bufRaw = sramBuffer[bufferIndex];
-  int bufCentered = (int)bufRaw - 127;   // centrera
-  int bufInverted = -bufCentered;        // invertera fas
+  if (badc1 == 0) badc1 = 1;
 
-  // --- Mappa potentiometern till feedback-styrka (0..240) ---
-  int fb = map((int)pot, 0, 255, 0, 240);
+  
+  //--- REVERB---
+  sramBufferSampleValue = sramBuffer[bufferIndex];
 
-  // --- Skala feedback enligt potentiometern (heltal) ---
-  long scaled = ((long)bufInverted * (long)fb) / 255L; // -127..+127 ungefär
+  soundSampleFromSramBuffer = 127 - sramBufferSampleValue;
 
-  // --- Ta bort DC-offset från inkommande ljud ---
-  soundSampleFromADC = (int)adc - 127;   // -127..+128
+  soundSampleFromSramBuffer = (map(badc1, 0, 255, 0, 240) / 255.0) * soundSampleFromSramBuffer;
+ 
+  soundSampleFromADC = badc0 - 127;
 
-  // --- Summera inkommande ljud + dämpad feedback ---
-  long combined = (long)soundSampleFromADC + scaled;
+  soundSampleFromADC = (soundSampleFromADC + soundSampleFromSramBuffer);
 
-  // --- Hård limitering för att undvika överstyrning ---
-  if (combined > 127L) combined = 127L;
-  if (combined < -127L) combined = -127L;
+  if(soundSampleFromADC < -127) soundSampleFromADC = -127;
+  if(soundSampleFromADC > 127) soundSampleFromADC = 127;
 
-  // --- Lägg tillbaka DC-offset och skriv till buffert ---
-  int outSample = (int)combined + 127;
-  if (outSample < 0) outSample = 0;
-  if (outSample > 255) outSample = 255;
+  sramBufferSampleValue = soundSampleFromADC + 127;
 
-  sramBuffer[bufferIndex] = (uint8_t)outSample;  // feedback i buffer
+  sramBuffer[bufferIndex] = sramBufferSampleValue;
 
-  // --- Skicka till PWM-utgång ---
-  sramBufferSampleValue = (uint8_t)outSample;
+  bufferIndex = (bufferIndex + 1) % 512;
+
   OCR2A = sramBufferSampleValue;
+  //OCR2A = badc0;
 
-  // --- Öka index och håll inom buffert ---
-  bufferIndex = (bufferIndex + 1) % WAVETABLE_SIZE;
 }
 
-// --- Timer2 overflow ISR -> triggar ADC-sampling ---
-ISR(TIMER2_OVF_vect)
-{
-  div32 = !div32;
-  if (div32) {
-    div16 = !div16;
+
+
+
+// Funktion för att fylla SRAM buffern med en vågform
+void fillSramBufferWithWaveTable(){
+
+  
+  
+  
+}
+
+
+
+
+// Timer2, interruptservice 62.5 KHz
+// Här samplas analogingång 0 (ljudingången) och analogingång 1 (potentiometern) 16Mhz / 256 / 2 / 2 = 15625 Hz
+ISR(TIMER2_OVF_vect) {
+  div32=!div32; // Dela timer2s frekvens med 2 till 31.25kHz genom att toggla div32 mellan 0 och 1 och gör bara något när div32 är 1
+  if (div32){ 
+    div16=!div16; //  Dela timer2 igen på samma sätt
     if (div16) {
-      badc0 = ADCH;          // sampla kanal 0
-      sbi(ADMUX, MUX0);      // växla till kanal 1
-      sampleFlag = true;
-    } else {
-      badc1 = ADCH;          // sampla kanal 1
-      cbi(ADMUX, MUX0);      // växla tillbaka till kanal 0
+    // Sampla kanal 0 och 1 varannan gång så att båda kanalerna samplas i 15.6kHz
+      badc0 = ADCH; // Sampla ADC kanal 0
+      sbi(ADMUX,MUX0); // Sätt multiplex till kanal 1 (med hjälp av sbi)
+      sampleFlag = true; // Sätt samplingsflaggan till true då ljudet har samplats en gång
     }
-    ibb++; ibb--; ibb++; ibb--;
-    sbi(ADCSRA, ADSC);       // starta nästa ADC-konvertering
+    else
+    {
+      badc1 = ADCH; // Sampla ADC kanal 1
+      cbi(ADMUX,MUX0); // Sätt multiplex till kanal 0 (med hjälp av cbi)
+    }
+    ibb++; // Kort fördröjning innan nästa conversion
+    ibb--; 
+    ibb++; 
+    ibb--;
+    sbi(ADCSRA,ADSC); // Starta nästa conversion
   }
 }
